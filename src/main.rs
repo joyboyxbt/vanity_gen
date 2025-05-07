@@ -18,15 +18,18 @@ struct Args {
     /// Run in interactive wizard mode
     #[clap(long)]
     interactive: bool,
-    /// Vanity prefix (Base58) to search for (cannot be used with --suffix)
-    #[clap(long, value_parser, conflicts_with = "suffix")]
+    /// Vanity prefix (Base58) to search for
+    #[clap(long, value_parser)]
     prefix: Option<String>,
-    /// Vanity suffix (Base58) to search for (cannot be used with --prefix)
-    #[clap(long, value_parser, conflicts_with = "prefix")]
+    /// Vanity suffix (Base58) to search for
+    #[clap(long, value_parser)]
     suffix: Option<String>,
-    /// Generate raw ED25519 keypairs instead of deriving from mnemonic
-    #[clap(long)]
+    /// Generate raw ED25519 keypairs (private key output)
+    #[clap(long, conflicts_with = "token")]
     raw: bool,
+    /// Generate a token address only (public key output)
+    #[clap(long, help = "Generate a token address only (public key only)")]
+    token: bool,
     /// Number of mnemonic words (12 or 24); only used if not --raw
     #[clap(long, default_value_t = 12, value_parser = parse_word_count)]
     words: usize,
@@ -52,12 +55,22 @@ use std::time::Instant;
 enum SearchMode {
     Prefix(String),
     Suffix(String),
+    /// Search for both a prefix and a suffix
+    Both { prefix: String, suffix: String },
+}
+
+/// Generation type for interactive mode: raw keypair, mnemonic, or token address only
+#[derive(Debug)]
+enum GenerationMode {
+    Raw,
+    Mnemonic,
+    Token,
 }
 
 /// Interactive wizard to collect options, estimate run time, and print the final command
 fn interactive_mode() {
     println!("Welcome to the Solana Vanity Address Wizard!");
-    // Threads
+    // Threads selection with confirmation if above 10
     let max_threads = num_cpus::get();
     let threads = loop {
         print!("How many threads to use [1-{}] (default {}): ", max_threads, max_threads);
@@ -65,19 +78,42 @@ fn interactive_mode() {
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
         let t = input.trim();
-        if t.is_empty() {
-            break max_threads;
+        // Use default if blank
+        let n = if t.is_empty() {
+            max_threads
+        } else if let Ok(val) = t.parse::<usize>() {
+            val
+        } else {
+            println!("Please enter a number between 1 and {}.", max_threads);
+            continue;
+        };
+        // Validate range
+        if n < 1 || n > max_threads {
+            println!("Please enter a number between 1 and {}.", max_threads);
+            continue;
         }
-        if let Ok(n) = t.parse::<usize>() {
-            if n >= 1 && n <= max_threads {
-                break n;
+        // Confirm if using many threads
+        if n > 10 {
+            loop {
+                print!(
+                    "You chose {} threads, which may impact your system performance. On Mac, check Activity Monitor > CPU; on Windows 10/11, open Task Manager > Performance > CPU. Continue with {} threads? (Y/N): ",
+                    n, n
+                );
+                io::stdout().flush().unwrap();
+                let mut conf = String::new();
+                io::stdin().read_line(&mut conf).unwrap();
+                match conf.trim().to_uppercase().as_str() {
+                    "" | "Y" | "YES" => break,
+                    "N" | "NO" => { println!("Let's choose again."); continue; },
+                    _ => { println!("Please type Y or N."); continue; },
+                }
             }
         }
-        println!("Please enter a number between 1 and {}.", max_threads);
+        break n;
     };
-    // Prefix or Suffix
+    // Choose search mode: Prefix, Suffix, or Both
     let mode = loop {
-        print!("Search by Prefix (P) or Suffix (S)? (default P): ");
+        print!("Search by Prefix (P), Suffix (S), or Both (B)? (default P): ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
@@ -86,27 +122,31 @@ fn interactive_mode() {
             break SearchMode::Prefix(prompt_pattern("prefix"));
         } else if c == "S" {
             break SearchMode::Suffix(prompt_pattern("suffix"));
+        } else if c == "B" {
+            let prefix = prompt_pattern("prefix");
+            let suffix = prompt_pattern("suffix");
+            break SearchMode::Both { prefix, suffix };
         }
-        println!("Please type P or S.");
+        println!("Please type P, S, or B.");
     };
-    // Mode: raw or mnemonic
-    let raw = loop {
-        print!("Generate raw keypairs (R) or derive from mnemonic (M)? (default M): ");
+    // Choose generation type: raw keypair, mnemonic, or token address only
+    let gen_mode = loop {
+        print!("Generate raw keypairs (R), derive from mnemonic (M), or token address only (T)? (default M): ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
         let c = input.trim().to_uppercase();
         if c.is_empty() || c == "M" {
-            break false;
+            break GenerationMode::Mnemonic;
         } else if c == "R" {
-            break true;
+            break GenerationMode::Raw;
+        } else if c == "T" {
+            break GenerationMode::Token;
         }
-        println!("Please type M or R.");
+        println!("Please type M, R, or T.");
     };
-    // Words (if mnemonic)
-    let words = if raw {
-        0
-    } else {
+    // Words (only for mnemonic mode)
+    let words = if let GenerationMode::Mnemonic = gen_mode {
         loop {
             print!("How many words for mnemonic? (12 or 24, default 12): ");
             io::stdout().flush().unwrap();
@@ -123,20 +163,26 @@ fn interactive_mode() {
             }
             println!("Please enter 12 or 24.");
         }
+    } else {
+        0
     };
     // Calibration
     println!("\nCalibrating key generation speed (this may take a moment)...");
-    let sample = 10_000;
+    let sample = 1_000;
     let start = Instant::now();
+    // Treat token mode same as raw for calibration
+    let raw_flag = matches!(gen_mode, GenerationMode::Raw | GenerationMode::Token);
     for _ in 0..sample {
-        generate_candidate(&mode, words, raw);
+        generate_candidate(&mode, words, raw_flag);
     }
     let elapsed = start.elapsed();
     let per_thread_rate = sample as f64 / elapsed.as_secs_f64();
     let total_rate = per_thread_rate * threads as f64;
     // Estimate search space
     let pattern_len = match &mode {
-        SearchMode::Prefix(p) | SearchMode::Suffix(p) => p.len(),
+        SearchMode::Prefix(p) => p.len(),
+        SearchMode::Suffix(s) => s.len(),
+        SearchMode::Both { prefix, suffix } => prefix.len() + suffix.len(),
     };
     let avg_tries = (BASE58_ALPHABET.len() as f64).powi(pattern_len as i32);
     let avg_secs = avg_tries / total_rate;
@@ -152,14 +198,20 @@ fn interactive_mode() {
     // Final command
     println!("\nCopy & paste this command to start searching:");
     let mut cmd = format!("solana-vanity-seed --threads {} ", threads);
-    if raw {
-        cmd.push_str("--raw ");
+    // Generation mode flags
+    match gen_mode {
+        GenerationMode::Raw => cmd.push_str("--raw "),
+        GenerationMode::Token => cmd.push_str("--token "),
+        GenerationMode::Mnemonic => {},
     }
+    // Search mode flags
     match &mode {
         SearchMode::Prefix(p) => cmd.push_str(&format!("--prefix {} ", p)),
         SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
+        SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
     }
-    if !raw {
+    // Mnemonic word count
+    if let GenerationMode::Mnemonic = gen_mode {
         cmd.push_str(&format!("--words {}", words));
     }
     println!("{}", cmd);
@@ -181,7 +233,7 @@ fn prompt_pattern(kind: &str) -> String {
 }
 
 /// Generate a single candidate key (mnemonic or raw) for calibration
-fn generate_candidate(mode: &SearchMode, words: usize, raw: bool) {
+fn generate_candidate(_mode: &SearchMode, words: usize, raw: bool) {
     if raw {
         let _ = Keypair::new();
     } else {
@@ -216,12 +268,22 @@ fn format_duration(secs: f64) -> String {
     parts.join(" ")
 }
 // -- Search loop ---------------------------------------------------------------
-/// Runs the brute-force search loop based on the given mode, word-count, and thread settings
-fn run_search(mode: SearchMode, words: usize, threads: usize, raw: bool) {
+/// Runs the brute-force search loop based on the given mode, word-count, and key generation mode
+fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
     let batch_size = 1_000_000;
     loop {
         let found = (0..batch_size).into_par_iter().find_map_any(|_| {
-            if raw {
+            if token {
+                // Token address only: generate keypair, check prefix/suffix, return no mnemonic
+                let keypair = Keypair::new();
+                let pubkey = keypair.pubkey().to_string();
+                if matches_mode(&mode, &pubkey) {
+                    Some((String::new(), keypair))
+                } else {
+                    None
+                }
+            } else if raw {
+                // Raw keypair: generate keypair, check, no mnemonic
                 let keypair = Keypair::new();
                 let pubkey = keypair.pubkey().to_string();
                 if matches_mode(&mode, &pubkey) {
@@ -230,6 +292,7 @@ fn run_search(mode: SearchMode, words: usize, threads: usize, raw: bool) {
                     None
                 }
             } else {
+                // Mnemonic-derived keypair
                 let entropy_bytes = if words == 12 { 16 } else { 32 };
                 let mut rng = thread_rng();
                 let mut entropy = vec![0u8; entropy_bytes];
@@ -246,13 +309,17 @@ fn run_search(mode: SearchMode, words: usize, threads: usize, raw: bool) {
             }
         });
         if let Some((mnemonic, keypair)) = found {
-            if !raw {
-                println!("Mnemonic: {}", mnemonic);
-            }
             let pubkey = keypair.pubkey().to_string();
             let private_key = bs58::encode(&keypair.to_bytes()).into_string();
-            println!("Public Address: {}", pubkey);
-            println!("Base58 Private Key: {}", private_key);
+            if token {
+                println!("Token Address: {}", pubkey);
+            } else {
+                if !raw {
+                    println!("Mnemonic: {}", mnemonic);
+                }
+                println!("Public Address: {}", pubkey);
+                println!("Base58 Private Key: {}", private_key);
+            }
             break;
         }
         println!("No match found in batch, continuing...");
@@ -266,7 +333,7 @@ fn matches_mode(mode: &SearchMode, pubkey: &str) -> bool {
             if !pubkey.starts_with(p) {
                 return false;
             }
-            // Next character rule
+            // Next character rule after prefix
             match pubkey.chars().nth(p.len()) {
                 Some(ch) if p.chars().all(|c| c.is_ascii_uppercase()) => ch.is_ascii_lowercase(),
                 Some(ch) if p.chars().all(|c| c.is_ascii_lowercase()) => ch.is_ascii_uppercase(),
@@ -279,7 +346,7 @@ fn matches_mode(mode: &SearchMode, pubkey: &str) -> bool {
             if !pubkey.ends_with(s) {
                 return false;
             }
-            // Previous character rule
+            // Previous character rule before suffix
             let idx = pubkey.len().saturating_sub(s.len()).saturating_sub(1);
             match pubkey.chars().nth(idx) {
                 Some(ch) if s.chars().all(|c| c.is_ascii_uppercase()) => ch.is_ascii_lowercase(),
@@ -289,12 +356,42 @@ fn matches_mode(mode: &SearchMode, pubkey: &str) -> bool {
                 None                                                   => false,
             }
         }
+        SearchMode::Both { prefix, suffix } => {
+            // Combined prefix and suffix check
+            // Prefix
+            if !pubkey.starts_with(prefix) {
+                return false;
+            }
+            let ok_prefix = match pubkey.chars().nth(prefix.len()) {
+                Some(ch) if prefix.chars().all(|c| c.is_ascii_uppercase()) => ch.is_ascii_lowercase(),
+                Some(ch) if prefix.chars().all(|c| c.is_ascii_lowercase()) => ch.is_ascii_uppercase(),
+                Some(ch) if prefix.chars().all(|c| c.is_ascii_digit())    => ch.is_ascii_alphabetic(),
+                Some(_)                                                    => true,
+                None                                                       => false,
+            };
+            if !ok_prefix {
+                return false;
+            }
+            // Suffix
+            if !pubkey.ends_with(suffix) {
+                return false;
+            }
+            let idx = pubkey.len().saturating_sub(suffix.len()).saturating_sub(1);
+            let ok_suffix = match pubkey.chars().nth(idx) {
+                Some(ch) if suffix.chars().all(|c| c.is_ascii_uppercase()) => ch.is_ascii_lowercase(),
+                Some(ch) if suffix.chars().all(|c| c.is_ascii_lowercase()) => ch.is_ascii_uppercase(),
+                Some(ch) if suffix.chars().all(|c| c.is_ascii_digit())    => ch.is_ascii_alphabetic(),
+                Some(_)                                                    => true,
+                None                                                       => false,
+            };
+            ok_suffix
+        }
     }
 }
 
 fn main() {
     // Parse CLI and destructure to avoid partial moves
-    let Args { show_alphabet, interactive, prefix, suffix, raw, words, threads: threads_opt } = Args::parse();
+    let Args { show_alphabet, interactive, prefix, suffix, raw, token, words, threads: threads_opt } = Args::parse();
     // If requested, just show the Base58 alphabet and exit
     if show_alphabet {
         println!("Allowed Base58 alphabet: {}", BASE58_ALPHABET);
@@ -305,26 +402,29 @@ fn main() {
         interactive_mode();
         return;
     }
-    // Determine search mode: prefix or suffix
-    let mode = if let Some(p) = prefix {
-        SearchMode::Prefix(p)
-    } else if let Some(s) = suffix {
-        SearchMode::Suffix(s)
-    } else {
-        eprintln!("Error: must specify --prefix or --suffix (or use --interactive)");
-        return;
-    };
-    // Determine thread count (use all logical CPUs if not specified)
-    let threads = threads_opt.unwrap_or_else(num_cpus::get);
-    // Validate pattern against Base58 alphabet
-    let pattern = match &mode {
-        SearchMode::Prefix(p) | SearchMode::Suffix(p) => p,
-    };
-    for c in pattern.chars() {
-        if !BASE58_ALPHABET.contains(c) {
-            eprintln!("Error: Invalid character '{}' in pattern", c);
-            println!("Allowed Base58 alphabet: {}", BASE58_ALPHABET);
+    // Determine search mode: prefix, suffix, or both
+    let mode = match (prefix, suffix) {
+        (Some(p), Some(s)) => SearchMode::Both { prefix: p, suffix: s },
+        (Some(p), None)    => SearchMode::Prefix(p),
+        (None, Some(s))    => SearchMode::Suffix(s),
+        _ => {
+            eprintln!("Error: must specify --prefix, --suffix, or both (or use --interactive)");
             return;
+        }
+    };
+    // Validate patterns against Base58 alphabet
+    let patterns = match &mode {
+        SearchMode::Prefix(p)       => vec![p],
+        SearchMode::Suffix(s)       => vec![s],
+        SearchMode::Both { prefix, suffix } => vec![prefix, suffix],
+    };
+    for pat in patterns {
+        for c in pat.chars() {
+            if !BASE58_ALPHABET.contains(c) {
+                eprintln!("Error: Invalid character '{}' in pattern", c);
+                println!("Allowed Base58 alphabet: {}", BASE58_ALPHABET);
+                return;
+            }
         }
     }
     // Determine thread count (use all logical CPUs if not specified)
@@ -336,7 +436,15 @@ fn main() {
         .num_threads(threads)
         .build_global()
         .expect("Failed to build thread pool");
-    eprintln!("Starting search: {} threads, mode={:?}, words={}, raw={}...", threads, mode, words, raw);
-    // Run the search loop (prefix or suffix, mnemonic or raw)
-    run_search(mode, words, threads, raw);
+    // Determine generation mode for non-interactive
+    let gen_mode = if token {
+        GenerationMode::Token
+    } else if raw {
+        GenerationMode::Raw
+    } else {
+        GenerationMode::Mnemonic
+    };
+    eprintln!("Starting search: {} threads, mode={:?}, gen_mode={:?}, words={}...", threads, mode, gen_mode, words);
+    // Run the search loop
+    run_search(mode, words, raw, token);
 }
