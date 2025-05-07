@@ -1,0 +1,1 @@
+# Solana Vanity Seed Generator
