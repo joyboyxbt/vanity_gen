@@ -51,9 +51,24 @@ solana-vanity-seed --threads 8 --prefix SOL --words 12
 # Search for address suffix "123" using raw keypairs:
 solana-vanity-seed --suffix 123 --raw
 
-# Generate token mint address with prefix "TKN":
-solana-vanity-seed --threads 4 --token --prefix TKN
-```
+ # Generate token mint address with prefix "TKN":
+ solana-vanity-seed --threads 4 --token --prefix TKN
+ ```
+
+## Search Notifications
+
+When running a search (via CLI or the interactive wizard), you will see live progress:
+- 🔍 A start message indicating the search has begun.
+- ❌ A progress line for each batch with no match, showing:
+  - Batch number
+  - Time taken for that batch
+  - Total elapsed time
+  Example:
+    ❌ Batch #3: no match (batch: 2s, total: 6s)
+- ⚡ Upon finding a match, the tool prints the address (and private key if applicable),
+  the total run time, and a security reminder to record and delete the message.
+
+## Interactive Wizard
 
 ## Interactive Wizard
 Run the wizard for guided prompts and final copy–paste command:
