@@ -261,9 +261,9 @@ fn interactive_mode() {
         }
         println!("Please type P, S, or B.");
     };
-    // Choose generation type: raw keypair, mnemonic, or token address only
+    // Choose generation type: raw keypair, mnemonic, or Cancel
     let gen_mode = loop {
-        print!("Generate raw keypairs (R), derive from mnemonic (M), or token address only (T)? (default M): ");
+        print!("Generate raw keypairs (R), derive from mnemonic (M), or Cancel (C)? (default M): ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
@@ -272,10 +272,11 @@ fn interactive_mode() {
             break GenerationMode::Mnemonic;
         } else if c == "R" {
             break GenerationMode::Raw;
-        } else if c == "T" {
-            break GenerationMode::Token;
+        } else if c == "C" {
+            println!("Wizard cancelled.");
+            return;
         }
-        println!("Please type M, R, or T.");
+        println!("Please type M, R, or C.");
     };
     // Words (only for mnemonic mode)
     let words = if let GenerationMode::Mnemonic = gen_mode {
