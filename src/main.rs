@@ -50,6 +50,13 @@ fn parse_word_count(s: &str) -> Result<usize, String> {
 use std::io::{self, Write};
 use std::time::Instant;
 
+/// Product type for interactive mode: wallet address or token mint
+#[derive(Debug)]
+enum ProductType {
+    Wallet,
+    Token,
+}
+
 /// Whether to search by prefix or suffix
 #[derive(Debug)]
 enum SearchMode {
@@ -70,6 +77,130 @@ enum GenerationMode {
 /// Interactive wizard to collect options, estimate run time, and print the final command
 fn interactive_mode() {
     println!("Welcome to the Solana Vanity Address Wizard!");
+    // Product selection: Wallet or Token
+    let product = loop {
+        print!("What would you like to generate: Wallet (W) or Token mint address (T)? (default W): ");
+        io::stdout().flush().unwrap();
+        let mut choice = String::new();
+        io::stdin().read_line(&mut choice).unwrap();
+        match choice.trim().to_uppercase().as_str() {
+            "" | "W" => break ProductType::Wallet,
+            "T"      => break ProductType::Token,
+            _         => println!("Please type W or T."),
+        }
+    };
+    // If token mint, run token wizard
+    if let ProductType::Token = product {
+        // Token-specific wizard
+        // Token name
+        print!("Enter your token name (e.g. MyToken Coin): "); io::stdout().flush().unwrap();
+        let mut token_name = String::new(); io::stdin().read_line(&mut token_name).unwrap();
+        let token_name = token_name.trim();
+        // Token ticker
+        let token_ticker = loop {
+            print!("Enter token ticker (e.g. TKN, uppercase letters only): "); io::stdout().flush().unwrap();
+            let mut t = String::new(); io::stdin().read_line(&mut t).unwrap();
+            let t = t.trim();
+            if !t.is_empty() && t.chars().all(|c| c.is_ascii_uppercase() && c.is_alphanumeric()) {
+                break t.to_string();
+            }
+            println!("Invalid ticker. Use uppercase letters and digits only.");
+        };
+        // Threads selection
+        let max_threads = num_cpus::get();
+        let threads = loop {
+            print!("How many threads to use for mint address search [1-{}] (default {}): ", max_threads, max_threads);
+            io::stdout().flush().unwrap();
+            let mut input = String::new(); io::stdin().read_line(&mut input).unwrap();
+            let n = if input.trim().is_empty() {
+                max_threads
+            } else if let Ok(v) = input.trim().parse::<usize>() {
+                v
+            } else {
+                println!("Please enter a number between 1 and {}.", max_threads);
+                continue;
+            };
+            if n < 1 || n > max_threads {
+                println!("Please enter a number between 1 and {}.", max_threads);
+                continue;
+            }
+            if n > 10 {
+                // Confirm for large thread counts
+                let mut confirmed = false;
+                loop {
+                    print!("You chose {} threads, which may impact performance. Continue? (Y/N): ", n);
+                    io::stdout().flush().unwrap();
+                    let mut c = String::new(); io::stdin().read_line(&mut c).unwrap();
+                    match c.trim().to_uppercase().as_str() {
+                        "" | "Y" | "YES" => { confirmed = true; break; }
+                        "N" | "NO"      => { println!("Let's choose again."); break; }
+                        _                 => { println!("Please type Y or N."); continue; }
+                    }
+                }
+                if !confirmed {
+                    continue;
+                }
+            }
+            break n;
+        };
+        // Search mode: prefix, suffix, or both
+        let mode = loop {
+            print!("Search mint address by Prefix (P), Suffix (S), or Both (B)? (default P): "); io::stdout().flush().unwrap();
+            let mut c = String::new(); io::stdin().read_line(&mut c).unwrap();
+            match c.trim().to_uppercase().as_str() {
+                "" | "P" => break SearchMode::Prefix(prompt_pattern("prefix")),
+                "S"      => break SearchMode::Suffix(prompt_pattern("suffix")),
+                "B"      => {
+                    let p = prompt_pattern("prefix");
+                    let s = prompt_pattern("suffix");
+                    break SearchMode::Both { prefix: p, suffix: s };
+                }
+                _         => println!("Please type P, S, or B."),
+            }
+        };
+        // Calibration
+        println!("\nCalibrating mint address generation speed...");
+        let sample = 1_000;
+        let start = Instant::now();
+        for _ in 0..sample { generate_candidate(&mode, 0, true); }
+        let elapsed = start.elapsed();
+        let per_thread = sample as f64 / elapsed.as_secs_f64();
+        let total_rate = per_thread * threads as f64;
+        // Estimate
+        let pat_len = match &mode {
+            SearchMode::Prefix(p) => p.len(),
+            SearchMode::Suffix(s) => s.len(),
+            SearchMode::Both { prefix, suffix } => prefix.len() + suffix.len(),
+        };
+        let space = (BASE58_ALPHABET.len() as f64).powi(pat_len as i32);
+        println!("\nEstimated total rate: {:.2} keys/sec", total_rate);
+        println!("Search space: 58^{} ≈ {:.0} keys", pat_len, space);
+        println!("Avg time: {}", format_duration(space / total_rate));
+        // Final command
+        println!("\nCopy & paste this command to start your token mint address search:");
+        let mut cmd = format!("solana-vanity-seed --threads {} --token ", threads);
+        match &mode {
+            SearchMode::Prefix(p) => cmd.push_str(&format!("--prefix {} ", p)),
+            SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
+            SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
+        }
+        println!("{}", cmd);
+        // Post steps
+        println!("\nPost-generation steps for your new token:");
+        println!("1. Run the above command and note the 'Public Address' value as your token mint address.");
+        println!("2. Create your SPL token:");
+        println!("   spl-token create-token --decimals 9 <TOKEN_MINT_ADDRESS>");
+        println!("3. Create an associated token account for yourself:");
+        println!("   spl-token create-account <TOKEN_MINT_ADDRESS>");
+        println!("4. Mint initial supply:");
+        println!("   spl-token mint <TOKEN_MINT_ADDRESS> <AMOUNT>");
+        println!("5. (Optional) Add liquidity on Raydium or Serum using the new token.");
+        println!("   See https://docs.raydium.io/faqs/add-liquidity for guidance.");
+        println!("\nToken Name: {}", token_name);
+        println!("Token Ticker: ${}", token_ticker);
+        return;
+    }
+    // --- Wallet wizard continues below ---
     // Threads selection with confirmation if above 10
     let max_threads = num_cpus::get();
     let threads = loop {
@@ -78,7 +209,7 @@ fn interactive_mode() {
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
         let t = input.trim();
-        // Use default if blank
+        // Use default if blank, parse otherwise
         let n = if t.is_empty() {
             max_threads
         } else if let Ok(val) = t.parse::<usize>() {
@@ -94,19 +225,20 @@ fn interactive_mode() {
         }
         // Confirm if using many threads
         if n > 10 {
+            let mut confirmed = false;
             loop {
-                print!(
-                    "You chose {} threads, which may impact your system performance. On Mac, check Activity Monitor > CPU; on Windows 10/11, open Task Manager > Performance > CPU. Continue with {} threads? (Y/N): ",
-                    n, n
-                );
+                print!("You chose {} threads, which may impact your system performance. Continue? (Y/N): ", n);
                 io::stdout().flush().unwrap();
                 let mut conf = String::new();
                 io::stdin().read_line(&mut conf).unwrap();
                 match conf.trim().to_uppercase().as_str() {
-                    "" | "Y" | "YES" => break,
-                    "N" | "NO" => { println!("Let's choose again."); continue; },
-                    _ => { println!("Please type Y or N."); continue; },
+                    "" | "Y" | "YES" => { confirmed = true; break; }
+                    "N" | "NO"      => { println!("Let's choose again."); break; }
+                    _                 => { println!("Please type Y or N."); continue; }
                 }
+            }
+            if !confirmed {
+                continue;
             }
         }
         break n;
