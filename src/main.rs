@@ -177,14 +177,15 @@ fn interactive_mode() {
         println!("Search space: 58^{} ≈ {:.0} keys", pat_len, space);
         println!("Avg time: {}", format_duration(space / total_rate));
         // Final command
-        println!("\nCopy & paste this command to start your token mint address search:");
+        // Final command for token mint search
+        println!("\n⭐ Copy & paste this command to start your token mint address search:");
         let mut cmd = format!("./target/release/solana-vanity-seed --threads {} --token ", threads);
         match &mode {
             SearchMode::Prefix(p) => cmd.push_str(&format!("--prefix {} ", p)),
             SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
             SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
         }
-        println!("{}", cmd);
+        println!("➜ {}", cmd);
         // Post steps
         println!("\nPost-generation steps for your new token:");
         println!("1. Run the above command and note the 'Public Address' value as your token mint address.");
@@ -329,7 +330,8 @@ fn interactive_mode() {
     println!("  Average-case: {}", format_duration(avg_secs));
     println!("  Very likely (<5× avg): {}", format_duration(worst_secs));
     // Final command
-    println!("\nCopy & paste this command to start searching:");
+    // Final command for wallet address search
+    println!("\n⭐ Copy & paste this command to start searching:");
     let mut cmd = format!("./target/release/solana-vanity-seed --threads {} ", threads);
     // Generation mode flags
     match gen_mode {
@@ -347,7 +349,7 @@ fn interactive_mode() {
     if let GenerationMode::Mnemonic = gen_mode {
         cmd.push_str(&format!("--words {}", words));
     }
-    println!("{}", cmd);
+    println!("➜ {}", cmd);
 }
 
 /// Prompt the user to enter a prefix or suffix pattern
