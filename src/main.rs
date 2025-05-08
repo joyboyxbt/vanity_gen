@@ -178,7 +178,7 @@ fn interactive_mode() {
         println!("Avg time: {}", format_duration(space / total_rate));
         // Final command
         println!("\nCopy & paste this command to start your token mint address search:");
-        let mut cmd = format!("solana-vanity-seed --threads {} --token ", threads);
+        let mut cmd = format!("./target/release/solana-vanity-seed --threads {} --token ", threads);
         match &mode {
             SearchMode::Prefix(p) => cmd.push_str(&format!("--prefix {} ", p)),
             SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
@@ -330,7 +330,7 @@ fn interactive_mode() {
     println!("  Very likely (<5× avg): {}", format_duration(worst_secs));
     // Final command
     println!("\nCopy & paste this command to start searching:");
-    let mut cmd = format!("solana-vanity-seed --threads {} ", threads);
+    let mut cmd = format!("./target/release/solana-vanity-seed --threads {} ", threads);
     // Generation mode flags
     match gen_mode {
         GenerationMode::Raw => cmd.push_str("--raw "),
@@ -404,7 +404,16 @@ fn format_duration(secs: f64) -> String {
 /// Runs the brute-force search loop based on the given mode, word-count, and key generation mode
 fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
     let batch_size = 1_000_000;
+    // Track total and per-batch durations
+    let total_start = Instant::now();
+    let mut batch_count = 0;
+    // Show start notification for wallet searches only
+    if !token {
+        println!("🔍 Starting address search...");
+    }
     loop {
+        batch_count += 1;
+        let batch_start = Instant::now();
         let found = (0..batch_size).into_par_iter().find_map_any(|_| {
             if token {
                 // Token address only: generate keypair, check prefix/suffix, return no mnemonic
@@ -444,18 +453,33 @@ fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
         if let Some((mnemonic, keypair)) = found {
             let pubkey = keypair.pubkey().to_string();
             let private_key = bs58::encode(&keypair.to_bytes()).into_string();
+            let total_duration = total_start.elapsed();
             if token {
                 println!("Token Address: {}", pubkey);
+                println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                println!("⚠️  Record your token address now, then delete this message for safety.");
             } else {
                 if !raw {
                     println!("Mnemonic: {}", mnemonic);
                 }
                 println!("Public Address: {}", pubkey);
                 println!("Base58 Private Key: {}", private_key);
+                println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                println!("⚠️  Record your address and private key now, then delete for safety.");
             }
-            break;
+            return;
         }
-        println!("No match found in batch, continuing...");
+        let batch_duration = batch_start.elapsed();
+        let total_duration = total_start.elapsed();
+        // Batch progress notification for wallet searches only
+        if !token {
+            println!(
+                "❌ Batch #{}: no match (batch: {}, total: {})",
+                batch_count,
+                format_duration(batch_duration.as_secs_f64()),
+                format_duration(total_duration.as_secs_f64()),
+            );
+        }
     }
 }
 
