@@ -81,6 +81,22 @@ solana-vanity-seed --prefix ABC --executor gcp-gpu \
   --gcp-gpu-job my-gpu-job --gcp-gpu-image gcr.io/myproj/custom-gpu:tag
  ```
 
+## Address Mode Post-Search Steps
+
+After running the address search command (e.g., `solana-vanity-seed --prefix SOL --words 12`), you'll see progress updates in the terminal. When a matching address is found, the tool will print:
+
+- The generated public address
+- The private key (for raw mode) or mnemonic phrase
+
+Take these steps:
+
+1. Copy and securely store your private key or mnemonic. Do not share it.
+2. Import the private key or mnemonic into your Solana wallet (e.g., via `solana-keygen recover`, Phantom, etc.).
+3. Fund your new address with SOL to cover transaction fees.
+4. Use the address for your intended purpose (e.g., NFTs, DeFi, trading).
+
+_Note: When implementing a Telegram bot, include these steps in the bot's `/help` command._
+
 ## Search Notifications
 
 When running a search (via CLI or the interactive wizard), you will see live progress:
