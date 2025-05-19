@@ -39,6 +39,11 @@ Options:
   --words <12|24>         Number of words if deriving from mnemonic (default 12)
   --threads <N>           Number of CPU threads to use (default = all logical cores)
   --interactive           Run interactive wizard mode
+  --calibrate             Benchmark key-generation and estimate search times
+  --time                  Include total run time in search output
+  --executor <local|cpu|gcp-gpu|aws-gpu>
+                          Choose execution tier: local (free CPU), cpu (remote CPU),
+                          gcp-gpu (GCP A100 GPU), aws-gpu (AWS GPU)
   --show-alphabet         Print the Base58 alphabet and exit
   -h, --help              Print help information
   -V, --version           Print version information
@@ -47,12 +52,19 @@ Examples:
 ```bash
 # Search for address prefix "SOL" using 8 threads and mnemonic seed:
 solana-vanity-seed --threads 8 --prefix SOL --words 12
+# Same search, including total run time display:
+solana-vanity-seed --threads 8 --prefix SOL --words 12 --time
 
 # Search for address suffix "123" using raw keypairs:
 solana-vanity-seed --suffix 123 --raw
 
  # Generate token mint address with prefix "TKN":
  solana-vanity-seed --threads 4 --token --prefix TKN
+ # Run with different execution tiers:
+ solana-vanity-seed --prefix ABC --executor local      # Local CPU (slowest, free)
+ solana-vanity-seed --prefix ABC --executor cpu        # Remote CPU cluster (moderate speed, ~$0.10/hr)
+ solana-vanity-seed --prefix ABC --executor gcp-gpu    # GCP A100 GPU (fast, cost-effective)
+ solana-vanity-seed --prefix ABC --executor aws-gpu    # AWS GPU (fastest, higher cost)
  ```
 
 ## Search Notifications

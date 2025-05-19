@@ -1,6 +1,6 @@
 use bip39::{Language, Mnemonic};
 use solana_sdk::signature::{Keypair, SeedDerivable, Signer};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
 use bs58;
 use rand::{thread_rng, RngCore};
@@ -8,6 +8,18 @@ use num_cpus;
 
 // Define the Base58 alphabet for validation
 const BASE58_ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/// Which executor to dispatch the job to (trade-off between cost and speed)
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+enum Executor {
+    /// Run locally (free, CPU-only)
+    Local,
+    /// Remote CPU cluster (~$0.10/hr)
+    Cpu,
+    /// GCP A100 GPU (fast, cost-effective GPU)
+    GcpGpu,
+    /// AWS GPU (top-tier speed, higher cost)
+    AwsGpu,
+}
 
 #[derive(Parser)]
 #[clap(author, version, about = "Generate Solana vanity addresses interactively or via CLI")]
@@ -18,6 +30,12 @@ struct Args {
     /// Run in interactive wizard mode
     #[clap(long)]
     interactive: bool,
+    /// Calibrate key-generation speed and estimate search times
+    #[clap(long, conflicts_with = "interactive")]
+    calibrate: bool,
+    /// Include total run time in final search output
+    #[clap(long, conflicts_with = "interactive")]
+    time: bool,
     /// Vanity prefix (Base58) to search for
     #[clap(long, value_parser)]
     prefix: Option<String>,
@@ -36,6 +54,9 @@ struct Args {
     /// Number of CPU threads to use; defaults to all logical cores
     #[clap(long)]
     threads: Option<usize>,
+    /// Which executor to use: local, cpu, gcp-gpu, or aws-gpu
+    #[clap(long, value_enum, default_value_t = Executor::Local, conflicts_with = "interactive")]
+    executor: Executor,
 }
 
 fn parse_word_count(s: &str) -> Result<usize, String> {
@@ -75,7 +96,7 @@ enum GenerationMode {
 }
 
 /// Interactive wizard to collect options, estimate run time, and print the final command
-fn interactive_mode() {
+fn interactive_mode(time: bool) {
     println!("Welcome to the Solana Vanity Address Wizard!");
     // Product selection: Wallet or Token
     let product = loop {
@@ -178,14 +199,42 @@ fn interactive_mode() {
         println!("Avg time: {}", format_duration(space / total_rate));
         // Final command
         // Final command for token mint search
-        println!("\n⭐ Copy & paste this command to start your token mint address search:");
-        let mut cmd = format!("./target/release/solana-vanity-seed --threads {} --token ", threads);
+        println!("\n⭐ Build your token mint search command:");
+        // Build base invocation
+        let mut cmd = format!("./target/release/solana-vanity-seed --threads {} ", threads);
+        if time {
+            cmd.push_str("--time ");
+        }
+        cmd.push_str("--token ");
         match &mode {
             SearchMode::Prefix(p) => cmd.push_str(&format!("--prefix {} ", p)),
             SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
             SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
         }
-        println!("➜ {}", cmd);
+        // Present executor options
+        println!("Executor options:");
+        println!("  L) Local: slowest but free (runs on your machine)");
+        println!("  C) CPU cloud: moderate speed, ~$0.10/hr");
+        println!("  G) GCP GPU: A100 GPU, fast & cost-effective");
+        println!("  A) AWS GPU: top-tier speed, up to $20/hr");
+        print!("Choose executor [L/C/G/A] (default L): ");
+        io::stdout().flush().unwrap();
+        let mut ex_in = String::new();
+        io::stdin().read_line(&mut ex_in).unwrap();
+        let exec = match ex_in.trim().to_uppercase().as_str() {
+            "C" => Executor::Cpu,
+            "G" => Executor::GcpGpu,
+            "A" => Executor::AwsGpu,
+            _   => Executor::Local,
+        };
+        // Wrap accordingly
+        let final_cmd = match exec {
+            Executor::Cpu    => format!("aws batch submit-job --job-name vanity-search-cpu --job-queue cpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cmd),
+            Executor::GcpGpu => format!("gcloud run jobs execute vanity-gpu-job --image gcr.io/myproj/vanity-gpu:latest --args=\"{}\"", cmd),
+            Executor::AwsGpu => format!("aws batch submit-job --job-name vanity-search-gpu --job-queue gpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cmd),
+            Executor::Local  => cmd.clone(),
+        };
+        println!("➜ {}", final_cmd);
         // Post steps
         println!("\nPost-generation steps for your new token:");
         println!("1. Run the above command and note the 'Public Address' value as your token mint address.");
@@ -331,13 +380,17 @@ fn interactive_mode() {
     println!("  Very likely (<5× avg): {}", format_duration(worst_secs));
     // Final command
     // Final command for wallet address search
-    println!("\n⭐ Copy & paste this command to start searching:");
+    println!("\n⭐ Build your address search command:");
+    // Build base invocation
     let mut cmd = format!("./target/release/solana-vanity-seed --threads {} ", threads);
+    if time {
+        cmd.push_str("--time ");
+    }
     // Generation mode flags
     match gen_mode {
         GenerationMode::Raw => cmd.push_str("--raw "),
         GenerationMode::Token => cmd.push_str("--token "),
-        GenerationMode::Mnemonic => {},
+        GenerationMode::Mnemonic => cmd.push_str(&format!("--words {} ", words)),
     }
     // Search mode flags
     match &mode {
@@ -345,11 +398,25 @@ fn interactive_mode() {
         SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
         SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
     }
-    // Mnemonic word count
-    if let GenerationMode::Mnemonic = gen_mode {
-        cmd.push_str(&format!("--words {}", words));
-    }
-    println!("➜ {}", cmd);
+    // Choose executor tier: Local (L), CPU cloud (C), GCP GPU (G), or AWS GPU (A)
+    print!("Where should this run? Local (L), CPU cloud (C), GCP GPU (G), or AWS GPU (A)? (default L): ");
+    io::stdout().flush().unwrap();
+    let mut ex_in = String::new();
+    io::stdin().read_line(&mut ex_in).unwrap();
+    let exec = match ex_in.trim().to_uppercase().as_str() {
+        "C" => Executor::Cpu,
+        "G" => Executor::GcpGpu,
+        "A" => Executor::AwsGpu,
+        _   => Executor::Local,
+    };
+    // Wrap accordingly
+    let final_cmd = match exec {
+        Executor::Cpu    => format!("aws batch submit-job --job-name vanity-search-cpu --job-queue cpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cmd),
+        Executor::GcpGpu => format!("gcloud run jobs execute vanity-gpu-job --image gcr.io/myproj/vanity-gpu:latest --args=\"{}\"", cmd),
+        Executor::AwsGpu => format!("aws batch submit-job --job-name vanity-search-gpu --job-queue gpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cmd),
+        Executor::Local  => cmd.clone(),
+    };
+    println!("➜ {}", final_cmd);
 }
 
 /// Prompt the user to enter a prefix or suffix pattern
@@ -402,9 +469,42 @@ fn format_duration(secs: f64) -> String {
     parts.push(format!("{}s", secs));
     parts.join(" ")
 }
+
+/// Benchmark keypair generation and estimate search times for 5- and 6-character patterns
+fn run_calibration(threads: usize) {
+    println!("Calibrating key generation speed...");
+    let sample = 1_000;
+    let start = Instant::now();
+    for _ in 0..sample {
+        let _ = Keypair::new();
+    }
+    let elapsed = start.elapsed();
+    let elapsed_secs = elapsed.as_secs_f64();
+    let per_thread = sample as f64 / elapsed_secs;
+    let total_rate = per_thread * threads as f64;
+    println!("Calibration completed in {}", format_duration(elapsed_secs));
+    println!("Per-thread rate: {:.2} keys/sec", per_thread);
+    println!("Total rate ({} threads): {:.2} keys/sec", threads, total_rate);
+    let space5 = (BASE58_ALPHABET.len() as f64).powi(5);
+    let space6 = (BASE58_ALPHABET.len() as f64).powi(6);
+    let avg5 = space5 / total_rate;
+    let avg6 = space6 / total_rate;
+    let best5 = 1.0 / total_rate;
+    let best6 = 1.0 / total_rate;
+    let worst5 = avg5 * 5.0;
+    let worst6 = avg6 * 5.0;
+    println!("5-character search space: 58^5 ≈ {:.0}", space5);
+    println!("  Best-case: {}", format_duration(best5));
+    println!("  Avg-case: {}", format_duration(avg5));
+    println!("  Very likely (<5× avg): {}", format_duration(worst5));
+    println!("6-character search space: 58^6 ≈ {:.0}", space6);
+    println!("  Best-case: {}", format_duration(best6));
+    println!("  Avg-case: {}", format_duration(avg6));
+    println!("  Very likely (<5× avg): {}", format_duration(worst6));
+}
 // -- Search loop ---------------------------------------------------------------
-/// Runs the brute-force search loop based on the given mode, word-count, and key generation mode
-fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
+/// Runs the brute-force search loop based on the given mode, word-count, key generation mode, and timing option
+fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool, time: bool) {
     let batch_size = 1_000_000;
     // Track total and per-batch durations
     let total_start = Instant::now();
@@ -458,7 +558,9 @@ fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
             let total_duration = total_start.elapsed();
             if token {
                 println!("Token Address: {}", pubkey);
-                println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                if time {
+                    println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                }
                 println!("⚠️  Record your token address now, then delete this message for safety.");
             } else {
                 if !raw {
@@ -466,7 +568,9 @@ fn run_search(mode: SearchMode, words: usize, raw: bool, token: bool) {
                 }
                 println!("Public Address: {}", pubkey);
                 println!("Base58 Private Key: {}", private_key);
-                println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                if time {
+                    println!("⏱ Total run time: {}", format_duration(total_duration.as_secs_f64()));
+                }
                 println!("⚠️  Record your address and private key now, then delete for safety.");
             }
             return;
@@ -550,7 +654,7 @@ fn matches_mode(mode: &SearchMode, pubkey: &str) -> bool {
 
 fn main() {
     // Parse CLI and destructure to avoid partial moves
-    let Args { show_alphabet, interactive, prefix, suffix, raw, token, words, threads: threads_opt } = Args::parse();
+    let Args { show_alphabet, interactive, calibrate, time, prefix, suffix, raw, token, words, threads: threads_opt, executor } = Args::parse();
     // If requested, just show the Base58 alphabet and exit
     if show_alphabet {
         println!("Allowed Base58 alphabet: {}", BASE58_ALPHABET);
@@ -558,7 +662,12 @@ fn main() {
     }
     // If interactive mode, run the wizard and exit
     if interactive {
-        interactive_mode();
+        interactive_mode(time);
+        return;
+    }
+    if calibrate {
+        let threads = threads_opt.unwrap_or_else(num_cpus::get);
+        run_calibration(threads);
         return;
     }
     // Determine search mode: prefix, suffix, or both
@@ -603,7 +712,43 @@ fn main() {
     } else {
         GenerationMode::Mnemonic
     };
+    // If using a remote executor, build and print the submission command, then exit
+    if executor != Executor::Local {
+        // Build the inner binary invocation
+        let mut inner = format!("./target/release/solana-vanity-seed --threads {} ", threads);
+        if time {
+            inner.push_str("--time ");
+        }
+        match gen_mode {
+            GenerationMode::Raw => inner.push_str("--raw "),
+            GenerationMode::Token => inner.push_str("--token "),
+            GenerationMode::Mnemonic => inner.push_str(&format!("--words {} ", words)),
+        }
+        match &mode {
+            SearchMode::Prefix(p) => inner.push_str(&format!("--prefix {} ", p)),
+            SearchMode::Suffix(s) => inner.push_str(&format!("--suffix {} ", s)),
+            SearchMode::Both { prefix, suffix } => inner.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
+        }
+        // Wrap in executor template according to selected tier
+        let submission = match executor {
+            Executor::Cpu => {
+                // Remote CPU cluster (e.g. AWS Batch CPU queue)
+                format!("aws batch submit-job --job-name vanity-search-cpu --job-queue cpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", inner)
+            }
+            Executor::GcpGpu => {
+                // GCP A100 GPU job
+                format!("gcloud run jobs execute vanity-gpu-job --image gcr.io/myproj/vanity-gpu:latest --args=\"{}\"", inner)
+            }
+            Executor::AwsGpu => {
+                // AWS GPU job
+                format!("aws batch submit-job --job-name vanity-search-gpu --job-queue gpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", inner)
+            }
+            Executor::Local => inner.clone(),
+        };
+        println!("\n⭐ Submit this command to {} executor:\n➜ {}", format!("{:?}", executor).to_lowercase(), submission);
+        return;
+    }
+    // Local execution: start search loop
     eprintln!("Starting search: {} threads, mode={:?}, gen_mode={:?}, words={}...", threads, mode, gen_mode, words);
-    // Run the search loop
-    run_search(mode, words, raw, token);
+    run_search(mode, words, raw, token, time);
 }
