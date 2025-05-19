@@ -1,0 +1,28 @@
+apiVersion: run.googleapis.com/v1
+               kind: Job
+               metadata:
+                 name: vanity-gpu-job
+               spec:
+                 maxRetries: 0
+                 template:
+                   spec:
+                     containers:
+                     - image: gcr.io/rapid-pact-460311-v6/vanity-gpu:latest
+                       command:
+                       - solana-vanity-seed
+                       - --prefix
+                       - tst123
+                       - --executor
+                       - gcp-gpu
+                       - --gcp-gpu-job
+                       - vanity-gpu-job
+                       - --gcp-gpu-image
+                       - gcr.io/rapid-pact-460311-v6/vanity-gpu:latest
+                       - --threads
+                       - "1"
+                       resources:
+                         limits:
+                           cpu: "4"
+                           memory: "8Gi"
+                           nvidia.com/gpu: "1"
+                     restartPolicy: Never
