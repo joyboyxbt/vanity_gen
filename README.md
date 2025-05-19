@@ -44,6 +44,12 @@ Options:
   --executor <local|cpu|gcp-gpu|aws-gpu>
                           Choose execution tier: local (free CPU), cpu (remote CPU),
                           gcp-gpu (GCP A100 GPU), aws-gpu (AWS GPU)
+  --cpu-job <NAME>        Remote CPU batch job name (default: vanity-search-cpu)
+  --cpu-queue <QUEUE>     Remote CPU batch queue (default: cpu-queue)
+  --gcp-gpu-job <NAME>    GCP GPU job name (default: vanity-gpu-job)
+  --gcp-gpu-image <IMG>   GCP GPU container image (default: gcr.io/myproj/vanity-gpu:latest)
+  --aws-gpu-job <NAME>    AWS GPU batch job name (default: vanity-search-gpu)
+  --aws-gpu-queue <QUEUE> AWS GPU batch queue (default: gpu-queue)
   --show-alphabet         Print the Base58 alphabet and exit
   -h, --help              Print help information
   -V, --version           Print version information
@@ -65,6 +71,14 @@ solana-vanity-seed --suffix 123 --raw
  solana-vanity-seed --prefix ABC --executor cpu        # Remote CPU cluster (moderate speed, ~$0.10/hr)
  solana-vanity-seed --prefix ABC --executor gcp-gpu    # GCP A100 GPU (fast, cost-effective)
  solana-vanity-seed --prefix ABC --executor aws-gpu    # AWS GPU (fastest, higher cost)
+
+# Custom infrastructure settings:
+# Use a custom CPU queue and job name
+solana-vanity-seed --prefix ABC --executor cpu \
+  --cpu-job my-cpu-job --cpu-queue my-cpu-queue
+# Use a custom GCP GPU job and image
+solana-vanity-seed --prefix ABC --executor gcp-gpu \
+  --gcp-gpu-job my-gpu-job --gcp-gpu-image gcr.io/myproj/custom-gpu:tag
  ```
 
 ## Search Notifications

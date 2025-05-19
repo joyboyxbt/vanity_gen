@@ -55,8 +55,26 @@ struct Args {
     #[clap(long)]
     threads: Option<usize>,
     /// Which executor to use: local, cpu, gcp-gpu, or aws-gpu
-    #[clap(long, value_enum, default_value_t = Executor::Local, conflicts_with = "interactive")]
+    #[clap(long, value_enum, default_value_t = Executor::Local)]
     executor: Executor,
+    /// Remote CPU cluster job name (for --executor cpu)
+    #[clap(long, default_value = "vanity-search-cpu")]
+    cpu_job: String,
+    /// Remote CPU cluster job queue (for --executor cpu)
+    #[clap(long, default_value = "cpu-queue")]
+    cpu_queue: String,
+    /// GCP GPU job name (for --executor gcp-gpu)
+    #[clap(long, default_value = "vanity-gpu-job")]
+    gcp_gpu_job: String,
+    /// GCP GPU container image (for --executor gcp-gpu)
+    #[clap(long, default_value = "gcr.io/myproj/vanity-gpu:latest")]
+    gcp_gpu_image: String,
+    /// AWS GPU job name (for --executor aws-gpu)
+    #[clap(long, default_value = "vanity-search-gpu")]
+    aws_gpu_job: String,
+    /// AWS GPU job queue (for --executor aws-gpu)
+    #[clap(long, default_value = "gpu-queue")]
+    aws_gpu_queue: String,
 }
 
 fn parse_word_count(s: &str) -> Result<usize, String> {
@@ -214,7 +232,7 @@ fn interactive_mode(time: bool) {
         // Present executor options
         println!("Executor options:");
         println!("  L) Local: slowest but free (runs on your machine)");
-        println!("  C) CPU cloud: moderate speed, ~$0.10/hr");
+        println!("  C) CPU Cloud: moderate speed, ~$0.10/hr");
         println!("  G) GCP GPU: A100 GPU, fast & cost-effective");
         println!("  A) AWS GPU: top-tier speed, up to $20/hr");
         print!("Choose executor [L/C/G/A] (default L): ");
@@ -398,8 +416,8 @@ fn interactive_mode(time: bool) {
         SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
         SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
     }
-    // Choose executor tier: Local (L), CPU cloud (C), GCP GPU (G), or AWS GPU (A)
-    print!("Where should this run? Local (L), CPU cloud (C), GCP GPU (G), or AWS GPU (A)? (default L): ");
+    // Choose executor tier: Local (L), CPU Cloud (C), GCP GPU (G), or AWS GPU (A)
+    print!("Where should this run? Local (L), CPU Cloud (C), GCP GPU (G), or AWS GPU (A)? (default L): ");
     io::stdout().flush().unwrap();
     let mut ex_in = String::new();
     io::stdin().read_line(&mut ex_in).unwrap();
@@ -654,7 +672,7 @@ fn matches_mode(mode: &SearchMode, pubkey: &str) -> bool {
 
 fn main() {
     // Parse CLI and destructure to avoid partial moves
-    let Args { show_alphabet, interactive, calibrate, time, prefix, suffix, raw, token, words, threads: threads_opt, executor } = Args::parse();
+    let Args { show_alphabet, interactive, calibrate, time, prefix, suffix, raw, token, words, threads: threads_opt, executor, cpu_job, cpu_queue, gcp_gpu_job, gcp_gpu_image, aws_gpu_job, aws_gpu_queue } = Args::parse();
     // If requested, just show the Base58 alphabet and exit
     if show_alphabet {
         println!("Allowed Base58 alphabet: {}", BASE58_ALPHABET);
@@ -733,15 +751,15 @@ fn main() {
         let submission = match executor {
             Executor::Cpu => {
                 // Remote CPU cluster (e.g. AWS Batch CPU queue)
-                format!("aws batch submit-job --job-name vanity-search-cpu --job-queue cpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", inner)
+                format!("aws batch submit-job --job-name {} --job-queue {} --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cpu_job, cpu_queue, inner)
             }
             Executor::GcpGpu => {
                 // GCP A100 GPU job
-                format!("gcloud run jobs execute vanity-gpu-job --image gcr.io/myproj/vanity-gpu:latest --args=\"{}\"", inner)
+                format!("gcloud run jobs execute {} --image {} --args=\"{}\"", gcp_gpu_job, gcp_gpu_image, inner)
             }
             Executor::AwsGpu => {
                 // AWS GPU job
-                format!("aws batch submit-job --job-name vanity-search-gpu --job-queue gpu-queue --container-overrides command=[\"sh\",\"-c\",\"{}\"]", inner)
+                format!("aws batch submit-job --job-name {} --job-queue {} --container-overrides command=[\"sh\",\"-c\",\"{}\"]", aws_gpu_job, aws_gpu_queue, inner)
             }
             Executor::Local => inner.clone(),
         };
