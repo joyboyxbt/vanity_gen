@@ -416,8 +416,13 @@ fn interactive_mode(time: bool) {
         SearchMode::Suffix(s) => cmd.push_str(&format!("--suffix {} ", s)),
         SearchMode::Both { prefix, suffix } => cmd.push_str(&format!("--prefix {} --suffix {} ", prefix, suffix)),
     }
-    // Choose executor tier: Local (L), CPU Cloud (C), GCP GPU (G), or AWS GPU (A)
-    print!("Where should this run? Local (L), CPU Cloud (C), GCP GPU (G), or AWS GPU (A)? (default L): ");
+    // Present executor options
+    println!("Executor options:");
+    println!("  L) Local: slowest but free");
+    println!("  C) CPU Cloud: moderate speed, ~$0.10/hr");
+    println!("  G) GCP GPU: A100 GPU, fast & cost-effective");
+    println!("  A) AWS GPU: top-tier speed, up to $20/hr");
+    print!("Choose executor [L/C/G/A] (default L): ");
     io::stdout().flush().unwrap();
     let mut ex_in = String::new();
     io::stdin().read_line(&mut ex_in).unwrap();
@@ -750,16 +755,28 @@ fn main() {
         // Wrap in executor template according to selected tier
         let submission = match executor {
             Executor::Cpu => {
-                // Remote CPU cluster (e.g. AWS Batch CPU queue)
-                format!("aws batch submit-job --job-name {} --job-queue {} --container-overrides command=[\"sh\",\"-c\",\"{}\"]", cpu_job, cpu_queue, inner)
+                // Remote CPU cluster (AWS Batch)
+                format!(
+                    "aws batch submit-job --job-name {job_name} --job-queue {queue} --job-definition {job_def} --container-overrides command=[\"sh\",\"-c\",\"{cmd}\"]",
+                    job_name = cpu_job,
+                    queue = cpu_queue,
+                    job_def = cpu_job,
+                    cmd = inner
+                )
             }
             Executor::GcpGpu => {
                 // GCP A100 GPU job
                 format!("gcloud run jobs execute {} --image {} --args=\"{}\"", gcp_gpu_job, gcp_gpu_image, inner)
             }
             Executor::AwsGpu => {
-                // AWS GPU job
-                format!("aws batch submit-job --job-name {} --job-queue {} --container-overrides command=[\"sh\",\"-c\",\"{}\"]", aws_gpu_job, aws_gpu_queue, inner)
+                // AWS GPU job (AWS Batch)
+                format!(
+                    "aws batch submit-job --job-name {job_name} --job-queue {queue} --job-definition {job_def} --container-overrides command=[\"sh\",\"-c\",\"{cmd}\"]",
+                    job_name = aws_gpu_job,
+                    queue = aws_gpu_queue,
+                    job_def = aws_gpu_job,
+                    cmd = inner
+                )
             }
             Executor::Local => inner.clone(),
         };
