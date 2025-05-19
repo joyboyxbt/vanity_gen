@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for Solana Vanity Seed Generator (CPU executor)
 # Stage 1: Build the Rust binary
-FROM rust:1.70-slim AS builder
+FROM rust:latest-slim AS builder
 WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
