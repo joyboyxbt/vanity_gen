@@ -109,8 +109,7 @@ When running a search (via CLI or the interactive wizard), you will see live pro
     ❌ Batch #3: no match (batch: 2s, total: 6s)
 - ⚡ Upon finding a match, the tool prints the address (and private key if applicable),
   the total run time, and a security reminder to record and delete the message.
-
-## Interactive Wizard
+  
 
 ## Interactive Wizard
 Run the wizard for guided prompts and final copy–paste command:
